@@ -12,7 +12,7 @@ import java.util.List;
  */
 @Getter
 @Setter
-@ConfigurationProperties(prefix = "mosip.inji.device-attestation")
+@ConfigurationProperties(prefix = "wallet.device-attestation")
 public class DeviceAttestationProperties {
 
     /**
