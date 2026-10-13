@@ -113,6 +113,7 @@ Settings use the `wallet.device-attestation.*` prefix, not `mosip.inji.*`, becau
 | `proof-max-age-seconds` | `60` | Maximum device proof age |
 | `android.package-name` | | Wallet application id |
 | `android.cert-sha256-digests` | | App signing key SHA-256 from Play Console > App signing, as colon-separated hex or web-safe base64 |
+| `android.allow-unrecognized-app` | `false` | Showcase only: accept `UNRECOGNIZED_VERSION` with a warning; nonce, package, certificate, freshness and device checks remain enforced. Keep false in production. |
 | `android.required-device-verdicts` | `MEETS_DEVICE_INTEGRITY` | Accepted device verdicts |
 | `android.max-token-age-seconds` | `300` | Maximum integrity token age at registration |
 | `google.service-account-key-path` | | Service account key (JSON) for the Play Integrity decode API |

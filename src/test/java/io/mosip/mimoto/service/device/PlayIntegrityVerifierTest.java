@@ -32,7 +32,7 @@ public class PlayIntegrityVerifierTest {
     // SHA-256 of a signing certificate as the verdict reports it (web-safe base64) and as Play Console shows it (hex)
     private static final String DIGEST = "Gfbh3GqA42jJsiagFSdbC8IpZh2-Q-1vxM_Wy8GL2kw";
     private static final String DIGEST_HEX = "19:F6:E1:DC:6A:80:E3:68:C9:B2:26:A0:15:27:5B:0B:C2:29:66:1D:BE:43:ED:6F:C4:CF:D6:CB:C1:8B:DA:4C";
-    private static final String NONCE = "expected-integrity-nonce";
+    private static final String NONCE = "aUupWQobGoLYwqhWcZwHdd1o0yRETcYn1qReCBMK3LA";
     private static final Instant NOW = Instant.parse("2026-10-12T10:00:00Z");
 
     private RestTemplate restTemplate;
@@ -96,6 +96,32 @@ public class PlayIntegrityVerifierTest {
     }
 
     @Test
+    public void should_accept_when_googlePadsNonce() {
+        googleReturns(payload(PACKAGE, NONCE + "=", NOW, "PLAY_RECOGNIZED", PACKAGE, List.of(DIGEST),
+                List.of("MEETS_DEVICE_INTEGRITY")));
+
+        assertEquals("PLAY_RECOGNIZED", verifier.verify("token", NONCE).get("appRecognitionVerdict"));
+    }
+
+    @Test
+    public void should_reject_when_nonceMissingOrMalformed() {
+        for (String nonce : new String[]{null, "", NONCE + "==", NONCE + "!"}) {
+            assertRejected(payload(PACKAGE, nonce, NOW, "PLAY_RECOGNIZED", PACKAGE, List.of(DIGEST),
+                    List.of("MEETS_DEVICE_INTEGRITY")));
+        }
+    }
+
+    @Test
+    public void should_stillRejectUnrecognizedApp_when_googlePadsNonce() {
+        googleReturns(payload(PACKAGE, NONCE + "=", NOW, "UNRECOGNIZED_VERSION", PACKAGE, List.of(DIGEST),
+                List.of("MEETS_DEVICE_INTEGRITY")));
+
+        DeviceAttestationException e = assertThrows(DeviceAttestationException.class,
+                () -> verifier.verify("token", NONCE));
+        assertTrue(e.getMessage().contains("app not recognized by Play"));
+    }
+
+    @Test
     public void should_reject_when_requestPackageDiffers() {
         assertRejected(payload("com.evil.app", NONCE, NOW, "PLAY_RECOGNIZED", PACKAGE, List.of(DIGEST), List.of("MEETS_DEVICE_INTEGRITY")));
     }
@@ -103,6 +129,25 @@ public class PlayIntegrityVerifierTest {
     @Test
     public void should_reject_when_appNotPlayRecognized() {
         assertRejected(payload(PACKAGE, NONCE, NOW, "UNRECOGNIZED_VERSION", PACKAGE, List.of(DIGEST), List.of("MEETS_DEVICE_INTEGRITY")));
+    }
+
+    @Test
+    public void should_acceptUnrecognizedApp_when_showcaseExplicitlyEnabled() {
+        properties.getAndroid().setAllowUnrecognizedApp(true);
+        googleReturns(payload(PACKAGE, NONCE + "=", NOW, "UNRECOGNIZED_VERSION", PACKAGE, List.of(DIGEST),
+                List.of("MEETS_DEVICE_INTEGRITY")));
+
+        assertEquals("UNRECOGNIZED_VERSION", verifier.verify("token", NONCE).get("appRecognitionVerdict"));
+    }
+
+    @Test
+    public void should_keepOtherChecksEnforced_when_showcaseEnabled() {
+        properties.getAndroid().setAllowUnrecognizedApp(true);
+        assertRejected(payload(PACKAGE, NONCE, NOW, "UNEVALUATED", PACKAGE, List.of(DIGEST), List.of("MEETS_DEVICE_INTEGRITY")));
+        assertRejected(payload(PACKAGE, "wrong-nonce", NOW, "UNRECOGNIZED_VERSION", PACKAGE, List.of(DIGEST), List.of("MEETS_DEVICE_INTEGRITY")));
+        assertRejected(payload(PACKAGE, NONCE, NOW, "UNRECOGNIZED_VERSION", "com.evil.app", List.of(DIGEST), List.of("MEETS_DEVICE_INTEGRITY")));
+        assertRejected(payload(PACKAGE, NONCE, NOW, "UNRECOGNIZED_VERSION", PACKAGE, List.of("wrong-certificate"), List.of("MEETS_DEVICE_INTEGRITY")));
+        assertRejected(payload(PACKAGE, NONCE, NOW, "UNRECOGNIZED_VERSION", PACKAGE, List.of(DIGEST), List.of("MEETS_BASIC_INTEGRITY")));
     }
 
     @Test

@@ -23,6 +23,7 @@ import org.springframework.web.client.RestTemplate;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,15 +90,22 @@ public class PlayIntegrityVerifier implements DeviceAttestationVerifier {
         DeviceIntegrity device = required(payload.deviceIntegrity(), "deviceIntegrity");
 
         check(config.getPackageName().equals(request.requestPackageName()), "request package name mismatch");
-        check(Objects.equals(expectedNonce, request.nonce()), "nonce mismatch");
+        check(nonceMatches(expectedNonce, request.nonce()), "nonce mismatch");
         checkFresh(request.timestampMillis());
-        check(PLAY_RECOGNIZED.equals(app.appRecognitionVerdict()), "app not recognized by Play: " + app.appRecognitionVerdict());
+        boolean showcaseApp = config.isAllowUnrecognizedApp()
+                && "UNRECOGNIZED_VERSION".equals(app.appRecognitionVerdict());
+        check(PLAY_RECOGNIZED.equals(app.appRecognitionVerdict()) || showcaseApp,
+                "app not recognized by Play: " + app.appRecognitionVerdict());
         check(config.getPackageName().equals(app.packageName()), "app package name mismatch");
         List<String> digests = Objects.requireNonNullElse(app.certificateSha256Digest(), List.of());
         check(anyDigestAllowed(digests), "app signing certificate not allowed");
         List<String> deviceVerdicts = Objects.requireNonNullElse(device.deviceRecognitionVerdict(), List.of());
         check(deviceVerdicts.stream().anyMatch(config.getRequiredDeviceVerdicts()::contains),
                 "device verdict not accepted: " + deviceVerdicts);
+        if (showcaseApp) {
+            log.warn("SHOWCASE: accepting UNRECOGNIZED_VERSION for {} with an allowed signing certificate; "
+                    + "disable wallet.device-attestation.android.allow-unrecognized-app in production", app.packageName());
+        }
 
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("appRecognitionVerdict", app.appRecognitionVerdict());
@@ -134,6 +142,19 @@ public class PlayIntegrityVerifier implements DeviceAttestationVerifier {
         Instant now = clock.instant();
         check(!issued.isAfter(now.plus(FUTURE_SKEW)), "token timestamp is in the future");
         check(!issued.isBefore(now.minusSeconds(config.getMaxTokenAgeSeconds())), "token is too old");
+    }
+
+    /** Google may return the URL-safe Base64 nonce with padding even when the request omitted it. */
+    private static boolean nonceMatches(String expected, String actual) {
+        if (expected == null || actual == null) {
+            return false;
+        }
+        try {
+            return MessageDigest.isEqual(Base64.getUrlDecoder().decode(expected),
+                    Base64.getUrlDecoder().decode(actual));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     private boolean anyDigestAllowed(List<String> verdictDigests) {

@@ -41,6 +41,8 @@ public class DeviceAttestationProperties {
         private String packageName;
         /** Accepted SHA-256 digests of the app signing certificate, as reported by Play Integrity. */
         private List<String> certSha256Digests = new ArrayList<>();
+        /** Showcase only: warn for UNRECOGNIZED_VERSION; all other integrity checks remain enforced. */
+        private boolean allowUnrecognizedApp = false;
         /** Device verdicts of which at least one must be present. */
         private List<String> requiredDeviceVerdicts = new ArrayList<>(List.of("MEETS_DEVICE_INTEGRITY"));
         /** Maximum age of the integrity token, measured from its requestDetails.timestampMillis. */
