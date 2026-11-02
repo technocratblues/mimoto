@@ -536,9 +536,9 @@
             <version>1.5</version>
         </dependency>
         <dependency>
-            <groupId>decentralized-identity</groupId>
-            <artifactId>jsonld-common-java</artifactId>
-            <version>${jsonld-common-java.version}</version>
+            <groupId>co.nstant.in</groupId>
+            <artifactId>cbor</artifactId>
+            <version>0.9</version>
         </dependency>
     </dependencies>
 

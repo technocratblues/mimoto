@@ -181,9 +181,18 @@ public class MsoMdocCredentialFormatHandler implements CredentialFormatHandler {
         return displayProperties;
     }
 
-    @Override
+        @Override
     public Map<String, Object> extractAllCredentialProperties(VCCredentialResponse vcCredentialResponse) {
-        return extractCredentialClaims(vcCredentialResponse);
+        Map<String, Object> claims = extractCredentialClaims(vcCredentialResponse);
+        Map<String, Object> allProps = new LinkedHashMap<>(claims);
+        Map<String, Object> sdClaims = new LinkedHashMap<>();
+        for (String claimKey : claims.keySet()) {
+            sdClaims.put(claimKey, claimKey);
+        }
+        allProps.put("sdClaims", sdClaims);
+        allProps.put("sdClaimValues", claims);
+        allProps.put("claims", claims);
+        return allProps;
     }
 
     private LinkedHashMap<String, Map<CredentialIssuerDisplayResponse, Object>> buildFallbackDisplayProperties(

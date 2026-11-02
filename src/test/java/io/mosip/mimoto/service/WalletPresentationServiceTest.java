@@ -98,6 +98,9 @@ public class WalletPresentationServiceTest {
     private SessionManager sessionManager;
 
     @Mock
+    private MdocSelectiveDisclosureService mdocSelectiveDisclosureService;
+
+    @Mock
     private HttpSession mockHttpSession;
 
     @Mock
@@ -2423,6 +2426,36 @@ public class WalletPresentationServiceTest {
             assertTrue(e.getCause() instanceof InvalidRequestException);
             assertTrue(e.getCause().getMessage().contains("mso_mdoc data must be a String"));
         }
+    }
+           @Test
+    public void testToLibraryCredentialMsoMdocWithSelectiveDisclosureCallsFilterService() throws Exception {
+        Method method = WalletPresentationServiceImpl.class.getDeclaredMethod(
+                "toLibraryCredential", DecryptedCredentialDTO.class, Map.class);
+        method.setAccessible(true);
+
+        DecryptedCredentialDTO dto = DecryptedCredentialDTO.builder()
+                .id("mdoc-cred-1")
+                .credential(VCCredentialResponse.builder()
+                        .format(CredentialFormat.MSO_MDOC.getFormat())
+                        .credential("raw-mdoc-base64url-payload")
+                        .build())
+                .build();
+
+        List<String> selectedPaths = List.of("org.iso.18013.5.1.given_name");
+        Map<String, List<String>> selectedSdClaims = Map.of("mdoc-cred-1", selectedPaths);
+        String expectedFilteredMdoc = "filtered-mdoc-base64url-payload";
+
+        when(mdocSelectiveDisclosureService.filterMdoc("raw-mdoc-base64url-payload", selectedPaths))
+                .thenReturn(expectedFilteredMdoc);
+
+        Credential result = (Credential) method.invoke(walletPresentationService, dto, selectedSdClaims);
+
+        assertNotNull(result);
+        assertEquals(FormatType.MSO_MDOC, result.getFormat());
+        assertEquals("mdoc-cred-1", result.getCredentialId());
+        assertEquals(expectedFilteredMdoc, result.getData());
+        verify(mdocSelectiveDisclosureService, times(1))
+                .filterMdoc("raw-mdoc-base64url-payload", selectedPaths);
     }
 
 }

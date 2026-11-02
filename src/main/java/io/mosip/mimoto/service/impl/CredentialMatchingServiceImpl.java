@@ -383,7 +383,7 @@ public class CredentialMatchingServiceImpl implements CredentialMatchingService 
         return true;
     }
 
-    private boolean matchesFormat(VCCredentialResponse vc, Map<String, Map<String, List<String>>> descriptorFormat) {
+       private boolean matchesFormat(VCCredentialResponse vc, Map<String, Map<String, List<String>>> descriptorFormat) {
         if (descriptorFormat == null) {
             return true;
         }
@@ -395,6 +395,10 @@ public class CredentialMatchingServiceImpl implements CredentialMatchingService 
         }
         if (CredentialFormat.LDP_VC.getFormat().equalsIgnoreCase(vcFormat) && descriptorFormat.containsKey(LDP_VC_FORMAT)) {
             return matchesLdpVcFormat(vc, descriptorFormat);
+        }
+        if (CredentialFormat.MSO_MDOC.getFormat().equalsIgnoreCase(vcFormat)
+                && descriptorFormat.containsKey(CredentialFormat.MSO_MDOC.getFormat().toLowerCase())) {
+            return true;
         }
         return false;
     }
@@ -472,7 +476,7 @@ public class CredentialMatchingServiceImpl implements CredentialMatchingService 
         return matches.stream().anyMatch(match -> matchesFilter(match, filter));
     }
 
-    private Object getCredentialData(VCCredentialResponse vc) {
+       private Object getCredentialData(VCCredentialResponse vc) {
         String format = vc.getFormat();
         CredentialFormatHandler credentialFormatHandler = credentialFormatHandlerFactory.getHandler(vc.getFormat());
 
@@ -493,11 +497,12 @@ public class CredentialMatchingServiceImpl implements CredentialMatchingService 
                 mergeClaimProperties(credentialClaimsMap, extractedMap.get(SD_CLAIMS));
             }
             return credentialClaimsMap;
+        } else if (CredentialFormat.MSO_MDOC.getFormat().equalsIgnoreCase(format)) {
+            return credentialFormatHandler.extractCredentialClaims(vc);
         } else {
             throw new InvalidRequestException(UNSUPPORTED_FORMAT.getErrorCode(), "Unsupported credential format: " + format);
         }
     }
-
     private void mergeClaimProperties(Map<String, Object> target, Object section) {
         target.putAll(asStringObjectMap(section));
     }

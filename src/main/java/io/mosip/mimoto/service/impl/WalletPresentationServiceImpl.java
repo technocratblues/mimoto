@@ -82,6 +82,7 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
     private final CredentialFormatHandlerFactory credentialFormatHandlerFactory;
     private final WalletCredentialService walletCredentialService;
     private final SessionManager sessionManager;
+    private final MdocSelectiveDisclosureService mdocSelectiveDisclosureService;
 
     public WalletPresentationServiceImpl(
             VerifierService verifierService,
@@ -92,7 +93,8 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
             VerifiablePresentationsRepository verifiablePresentationsRepository,
             CredentialFormatHandlerFactory credentialFormatHandlerFactory,
             WalletCredentialService walletCredentialService,
-            SessionManager sessionManager) {
+            SessionManager sessionManager,
+            MdocSelectiveDisclosureService mdocSelectiveDisclosureService) {
         this.verifierService = verifierService;
         this.openID4VPService = openID4VPService;
         this.objectMapper = objectMapper;
@@ -102,6 +104,7 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
         this.credentialFormatHandlerFactory = credentialFormatHandlerFactory;
         this.walletCredentialService = walletCredentialService;
         this.sessionManager = sessionManager;
+        this.mdocSelectiveDisclosureService = mdocSelectiveDisclosureService;
     }
 
     @Override
@@ -397,12 +400,14 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
             String sdJwt = buildFilteredSdJwt(
                     dto, selectedSdClaims != null ? selectedSdClaims.get(dto.getId()) : null);
             return new Credential(format, sdJwt, dto.getId());
-        } else if (CredentialFormat.MSO_MDOC.getFormat().equalsIgnoreCase(vc.getFormat())) {
+            } else if (CredentialFormat.MSO_MDOC.getFormat().equalsIgnoreCase(vc.getFormat())) {
             if (!(vc.getCredential() instanceof String mdocString)) {
                 throw new InvalidRequestException(INVALID_REQUEST.getErrorCode(),
                         "Credential " + dto.getId() + " mso_mdoc data must be a String");
             }
-            return new Credential(FormatType.MSO_MDOC, mdocString, dto.getId());
+            List<String> selectedPaths = selectedSdClaims != null ? selectedSdClaims.get(dto.getId()) : null;
+            String filteredMdoc = buildFilteredMdoc(dto, selectedPaths);
+            return new Credential(FormatType.MSO_MDOC, filteredMdoc, dto.getId());
         } else if (CredentialFormat.LDP_VC.getFormat().equalsIgnoreCase(vc.getFormat())) {
             // inji-openid4vp expects LDP credentials as a JSON object (Map), not a typed POJO.
             Credential mapped = DcqlMatchingHelper.toLibraryCredential(dto, objectMapper);
@@ -597,9 +602,9 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> extractSdClaimsMap(DecryptedCredentialDTO dto) {
+        private Map<String, Object> extractSdClaimsMap(DecryptedCredentialDTO dto) {
         try {
-            if (!CredentialFormat.isSdJwt(dto.getCredential().getFormat())) {
+            if (!CredentialFormat.isSelectivelyDisclosable(dto.getCredential().getFormat())) {
                 return Collections.emptyMap();
             }
             Map<String, ?> allProps = credentialFormatHandlerFactory
@@ -678,6 +683,24 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
             }
         }
         throw new InvalidRequestException(INVALID_REQUEST.getErrorCode(), "Invalid LDP dataToSign: missing '.' separator");
+    }
+     /**
+     * Builds an mso_mdoc string containing only the user-selected / requested claims.
+     * If selectedPaths is null, all claims are retained (full presentation).
+     */
+    private String buildFilteredMdoc(DecryptedCredentialDTO credential, List<String> selectedPaths) {
+        if (!(credential.getCredential().getCredential() instanceof String mdocString)) {
+            return String.valueOf(credential.getCredential().getCredential());
+        }
+        if (selectedPaths == null) {
+            return mdocString;
+        }
+        try {
+            return mdocSelectiveDisclosureService.filterMdoc(mdocString, selectedPaths);
+        } catch (Exception e) {
+            log.error("Failed to filter mso_mdoc credential {}: {}", credential.getId(), e.getMessage(), e);
+            return mdocString;
+        }
     }
 
     /**
