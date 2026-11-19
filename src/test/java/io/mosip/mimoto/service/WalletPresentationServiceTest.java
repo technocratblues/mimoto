@@ -23,6 +23,7 @@ import io.mosip.mimoto.service.impl.OpenID4VPService;
 import io.mosip.mimoto.service.impl.SessionManager;
 import io.mosip.mimoto.service.impl.WalletPresentationServiceImpl;
 import jakarta.servlet.http.HttpSession;
+import io.mosip.mimoto.util.MdocTestData;
 import io.mosip.mimoto.util.SigningKeyUtil;
 import io.mosip.mimoto.util.UrlParameterUtils;
 import io.mosip.openID4VP.OpenID4VP;
@@ -32,6 +33,10 @@ import io.mosip.openID4VP.authorizationRequest.AuthorizationRequest;
 import io.mosip.openID4VP.authorizationRequest.AuthorizationDcqlRequest;
 import io.mosip.openID4VP.authorizationRequest.clientMetadata.ClientMetadata;
 import io.mosip.openID4VP.authorizationRequest.clientMetadata.ClientMetadataDraft23;
+import io.mosip.openID4VP.authorizationRequest.presentationDefinition.Constraints;
+import io.mosip.openID4VP.authorizationRequest.presentationDefinition.Fields;
+import io.mosip.openID4VP.authorizationRequest.presentationDefinition.InputDescriptor;
+import io.mosip.openID4VP.authorizationRequest.presentationDefinition.PresentationDefinition;
 import io.mosip.openID4VP.authorizationResponse.unsignedVPToken.UnsignedVPToken;
 import io.mosip.openID4VP.authorizationResponse.vpTokenSigningResult.VPTokenSigningResult;
 import io.mosip.openID4VP.common.OpenID4VPErrorCodes;
@@ -2381,16 +2386,18 @@ public class WalletPresentationServiceTest {
     }
 
     @Test
-    public void testToLibraryCredentialMsoMdocWithStringCredentialReturnsMsoMdocCredential() throws Exception {
+    public void testToLibraryCredentialMsoMdocWithoutSelectionSharesNoIssuerSignedItems() throws Exception {
         Method method = WalletPresentationServiceImpl.class.getDeclaredMethod(
                 "toLibraryCredential", DecryptedCredentialDTO.class, Map.class);
         method.setAccessible(true);
 
+        String mdoc = MdocTestData.toBase64Url(MdocTestData.issuerSigned(MdocTestData.MDL_DOC_TYPE,
+                MdocTestData.isoItems(MdocTestData.item(0, "given_name", "Alice"))));
         DecryptedCredentialDTO dto = DecryptedCredentialDTO.builder()
                 .id("mdoc-cred-1")
                 .credential(VCCredentialResponse.builder()
                         .format(CredentialFormat.MSO_MDOC.getFormat())
-                        .credential("base64url-encoded-mdoc-data")
+                        .credential(mdoc)
                         .build())
                 .build();
 
@@ -2399,7 +2406,10 @@ public class WalletPresentationServiceTest {
         assertNotNull(result);
         assertEquals(FormatType.MSO_MDOC, result.getFormat());
         assertEquals("mdoc-cred-1", result.getCredentialId());
-        assertEquals("base64url-encoded-mdoc-data", result.getData());
+        co.nstant.in.cbor.model.Map issuerSigned =
+                (co.nstant.in.cbor.model.Map) MdocTestData.fromBase64Url((String) result.getData());
+        assertNull(issuerSigned.get(new co.nstant.in.cbor.model.UnicodeString("nameSpaces")));
+        assertNotNull(issuerSigned.get(new co.nstant.in.cbor.model.UnicodeString("issuerAuth")));
     }
 
     @Test
@@ -2423,6 +2433,188 @@ public class WalletPresentationServiceTest {
             assertTrue(e.getCause() instanceof InvalidRequestException);
             assertTrue(e.getCause().getMessage().contains("mso_mdoc data must be a String"));
         }
+    }
+
+    @Test
+    public void testToLibraryCredentialMsoMdocWithSelectionSharesOnlySelectedItems() throws Exception {
+        Method method = WalletPresentationServiceImpl.class.getDeclaredMethod(
+                "toLibraryCredential", DecryptedCredentialDTO.class, Map.class);
+        method.setAccessible(true);
+
+        byte[] givenName = MdocTestData.item(0, "given_name", "Alice");
+        String mdoc = MdocTestData.toBase64Url(MdocTestData.issuerSigned(MdocTestData.MDL_DOC_TYPE,
+                MdocTestData.isoItems(givenName, MdocTestData.item(1, "family_name", "Smith"))));
+        DecryptedCredentialDTO dto = DecryptedCredentialDTO.builder()
+                .id("mdoc-cred-1")
+                .credential(VCCredentialResponse.builder()
+                        .format(CredentialFormat.MSO_MDOC.getFormat())
+                        .credential(mdoc)
+                        .build())
+                .build();
+        Map<String, List<String>> selectedSdClaims = Map.of("mdoc-cred-1", List.of("org.iso.18013.5.1.given_name"));
+
+        Credential result = (Credential) method.invoke(walletPresentationService, dto, selectedSdClaims);
+
+        assertEquals(FormatType.MSO_MDOC, result.getFormat());
+        assertEquals("mdoc-cred-1", result.getCredentialId());
+        co.nstant.in.cbor.model.Map issuerSigned =
+                (co.nstant.in.cbor.model.Map) MdocTestData.fromBase64Url((String) result.getData());
+        co.nstant.in.cbor.model.Map nameSpaces = (co.nstant.in.cbor.model.Map)
+                issuerSigned.get(new co.nstant.in.cbor.model.UnicodeString("nameSpaces"));
+        co.nstant.in.cbor.model.Array items = (co.nstant.in.cbor.model.Array)
+                nameSpaces.get(new co.nstant.in.cbor.model.UnicodeString(MdocTestData.ISO_NAMESPACE));
+        assertEquals(1, items.getDataItems().size());
+        assertArrayEquals(givenName, ((co.nstant.in.cbor.model.ByteString) items.getDataItems().get(0)).getBytes());
+    }
+
+    @Test
+    public void testToLibraryCredentialMsoMdocFilterFailureThrowsInsteadOfSharingFullMdoc() throws Exception {
+        Method method = WalletPresentationServiceImpl.class.getDeclaredMethod(
+                "toLibraryCredential", DecryptedCredentialDTO.class, Map.class);
+        method.setAccessible(true);
+
+        DecryptedCredentialDTO dto = DecryptedCredentialDTO.builder()
+                .id("mdoc-cred-1")
+                .credential(VCCredentialResponse.builder()
+                        .format(CredentialFormat.MSO_MDOC.getFormat())
+                        .credential("invalid-mdoc")
+                        .build())
+                .build();
+
+        try {
+            method.invoke(walletPresentationService, dto, Map.of("mdoc-cred-1", List.of("org.iso.18013.5.1.given_name")));
+            fail("Expected InvalidRequestException");
+        } catch (InvocationTargetException e) {
+            assertTrue(e.getCause() instanceof InvalidRequestException);
+            assertTrue(e.getCause().getMessage().contains("Selective disclosure failed for mso_mdoc credential mdoc-cred-1"));
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testResolveSubmissionSdClaimsPresentationExchangeUsesInputDescriptorPathsForMdoc() throws Exception {
+        Method method = WalletPresentationServiceImpl.class.getDeclaredMethod(
+                "resolveSubmissionSdClaims", SubmitPresentationRequestDTO.class,
+                VerifiablePresentationSessionData.class, Map.class);
+        method.setAccessible(true);
+
+        Fields givenNameField = new Fields(
+                List.of("$['org.iso.18013.5.1']['given_name']"), null, null, null, null, null);
+        Fields ageField = new Fields(
+                List.of("$['org.iso.18013.5.1']['age_over_18']"), null, null, null, null, null);
+        Map<String, Map<String, List<String>>> mdocFormat = Map.of("mso_mdoc", Map.of("alg", List.of("ES256")));
+        InputDescriptor mdlDescriptor = new InputDescriptor(
+                "org.iso.18013.5.1.mDL", "", "", mdocFormat,
+                new Constraints(List.of(givenNameField, ageField), null));
+        PresentationDefinition presentationDefinition = new PresentationDefinition(
+                "pd-mdl", List.of(mdlDescriptor), null, "", mdocFormat);
+        AuthorizationPresentationExchangeRequest peRequest = new AuthorizationPresentationExchangeRequest(
+                "client-id", "vp_token", "direct_post", "https://test-responseUri", "https://response-uri",
+                "mock-nonce", null, "mock-state", presentationDefinition, null);
+
+        DecryptedCredentialDTO mdocDto = DecryptedCredentialDTO.builder()
+                .id("mdoc-cred-1")
+                .identifier("org.iso.18013.5.1.mDL")
+                .credential(VCCredentialResponse.builder()
+                        .format(CredentialFormat.MSO_MDOC.getFormat())
+                        .credential("raw-mdoc")
+                        .build())
+                .build();
+        VerifiablePresentationSessionData sessionData = new VerifiablePresentationSessionData();
+        sessionData.setMatchingCredentials(List.of(mdocDto));
+        sessionData.setParsedAuthorizationRequest(peRequest);
+
+        SubmitPresentationRequestDTO request = SubmitPresentationRequestDTO.builder()
+                .selectedCredentials(SelectedCredentials.ofStrings(List.of("mdoc-cred-1")))
+                .build();
+
+        Map<String, List<String>> result = (Map<String, List<String>>) method.invoke(
+                walletPresentationService, request, sessionData, Map.of());
+
+        assertEquals(List.of("$['org.iso.18013.5.1']['given_name']", "$['org.iso.18013.5.1']['age_over_18']"),
+                result.get("mdoc-cred-1"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testResolveSubmissionSdClaimsPresentationExchangeKeepsExplicitMdocSelection() throws Exception {
+        Method method = WalletPresentationServiceImpl.class.getDeclaredMethod(
+                "resolveSubmissionSdClaims", SubmitPresentationRequestDTO.class,
+                VerifiablePresentationSessionData.class, Map.class);
+        method.setAccessible(true);
+
+        Fields givenNameField = new Fields(
+                List.of("$['org.iso.18013.5.1']['given_name']"), null, null, null, null, null);
+        Map<String, Map<String, List<String>>> mdocFormat = Map.of("mso_mdoc", Map.of("alg", List.of("ES256")));
+        InputDescriptor mdlDescriptor = new InputDescriptor(
+                "org.iso.18013.5.1.mDL", "", "", mdocFormat, new Constraints(List.of(givenNameField), null));
+        AuthorizationPresentationExchangeRequest peRequest = new AuthorizationPresentationExchangeRequest(
+                "client-id", "vp_token", "direct_post", "https://test-responseUri", "https://response-uri",
+                "mock-nonce", null, "mock-state",
+                new PresentationDefinition("pd-mdl", List.of(mdlDescriptor), null, "", mdocFormat), null);
+
+        DecryptedCredentialDTO mdocDto = DecryptedCredentialDTO.builder()
+                .id("mdoc-cred-1")
+                .identifier("org.iso.18013.5.1.mDL")
+                .credential(VCCredentialResponse.builder()
+                        .format(CredentialFormat.MSO_MDOC.getFormat())
+                        .credential("raw-mdoc")
+                        .build())
+                .build();
+        VerifiablePresentationSessionData sessionData = new VerifiablePresentationSessionData();
+        sessionData.setMatchingCredentials(List.of(mdocDto));
+        sessionData.setParsedAuthorizationRequest(peRequest);
+
+        SubmitPresentationRequestDTO request = SubmitPresentationRequestDTO.builder()
+                .selectedCredentials(SelectedCredentials.ofStrings(List.of("mdoc-cred-1")))
+                .selectedSdClaims(Map.of("mdoc-cred-1", List.of("org.iso.18013.5.1.family_name")))
+                .build();
+
+        Map<String, List<String>> result = (Map<String, List<String>>) method.invoke(
+                walletPresentationService, request, sessionData, Map.of());
+
+        assertEquals(List.of("org.iso.18013.5.1.family_name"), result.get("mdoc-cred-1"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testResolveSubmissionSdClaimsPresentationExchangeKeepsEmptyMdocSelection() throws Exception {
+        Method method = WalletPresentationServiceImpl.class.getDeclaredMethod(
+                "resolveSubmissionSdClaims", SubmitPresentationRequestDTO.class,
+                VerifiablePresentationSessionData.class, Map.class);
+        method.setAccessible(true);
+
+        Fields familyNameField = new Fields(
+                List.of("$['org.iso.18013.5.1']['family_name']"), null, null, null, null, null);
+        Map<String, Map<String, List<String>>> mdocFormat = Map.of("mso_mdoc", Map.of("alg", List.of("ES256")));
+        InputDescriptor mdlDescriptor = new InputDescriptor(
+                "org.iso.18013.5.1.mDL", "", "", mdocFormat, new Constraints(List.of(familyNameField), null));
+        AuthorizationPresentationExchangeRequest peRequest = new AuthorizationPresentationExchangeRequest(
+                "client-id", "vp_token", "direct_post", "https://test-responseUri", "https://response-uri",
+                "mock-nonce", null, "mock-state",
+                new PresentationDefinition("pd-mdl", List.of(mdlDescriptor), null, "", mdocFormat), null);
+
+        DecryptedCredentialDTO mdocDto = DecryptedCredentialDTO.builder()
+                .id("mdoc-cred-1")
+                .identifier("org.iso.18013.5.1.mDL")
+                .credential(VCCredentialResponse.builder()
+                        .format(CredentialFormat.MSO_MDOC.getFormat())
+                        .credential("raw-mdoc")
+                        .build())
+                .build();
+        VerifiablePresentationSessionData sessionData = new VerifiablePresentationSessionData();
+        sessionData.setMatchingCredentials(List.of(mdocDto));
+        sessionData.setParsedAuthorizationRequest(peRequest);
+
+        SubmitPresentationRequestDTO request = SubmitPresentationRequestDTO.builder()
+                .selectedCredentials(SelectedCredentials.ofStrings(List.of("mdoc-cred-1")))
+                .selectedSdClaims(Map.of("mdoc-cred-1", List.of()))
+                .build();
+
+        Map<String, List<String>> result = (Map<String, List<String>>) method.invoke(
+                walletPresentationService, request, sessionData, Map.of());
+
+        assertNull(result);
     }
 
 }

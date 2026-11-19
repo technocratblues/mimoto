@@ -26,10 +26,12 @@ import io.mosip.mimoto.util.UrlParameterUtils;
 import io.mosip.mimoto.util.DcqlClaimSetHelper;
 import io.mosip.mimoto.util.DcqlMatchingHelper;
 import io.mosip.mimoto.util.DcqlCredentialSetHelper;
+import io.mosip.mimoto.util.MdocSelectiveDisclosureUtil;
 import io.mosip.mimoto.util.SelectedSdClaimsUtil;
 import io.mosip.openID4VP.OpenID4VP;
 import io.mosip.openID4VP.authorizationRequest.AuthorizationDcqlRequest;
 import io.mosip.openID4VP.authorizationRequest.AuthorizationPresentationExchangeRequest;
+import io.mosip.openID4VP.authorizationRequest.presentationDefinition.InputDescriptor;
 import io.mosip.openID4VP.authorizationRequest.AuthorizationRequest;
 import io.mosip.openID4VP.authorizationRequest.Verifier;
 import io.mosip.openID4VP.authorizationRequest.clientMetadata.ClientMetadata;
@@ -402,7 +404,9 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
                 throw new InvalidRequestException(INVALID_REQUEST.getErrorCode(),
                         "Credential " + dto.getId() + " mso_mdoc data must be a String");
             }
-            return new Credential(FormatType.MSO_MDOC, mdocString, dto.getId());
+            List<String> selectedPaths = selectedSdClaims != null ? selectedSdClaims.get(dto.getId()) : null;
+            String filteredMdoc = buildFilteredMdoc(dto.getId(), mdocString, selectedPaths);
+            return new Credential(FormatType.MSO_MDOC, filteredMdoc, dto.getId());
         } else if (CredentialFormat.LDP_VC.getFormat().equalsIgnoreCase(vc.getFormat())) {
             // inji-openid4vp expects LDP credentials as a JSON object (Map), not a typed POJO.
             Credential mapped = DcqlMatchingHelper.toLibraryCredential(dto, objectMapper);
@@ -497,6 +501,7 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
         Map<String, List<String>> explicit = request.resolveEffectiveSelectedSdClaims();
         SelectedSdClaimsUtil.mergeInto(merged, explicit);
         if (!request.isDcqlSubmission()) {
+            resolvePresentationExchangeMdocClaims(request, sessionData, merged);
             return merged.isEmpty() ? null : merged;
         }
 
@@ -520,6 +525,59 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
             processDcqlSelectionCredentials(selection, credentialQuery, queryId, explicit, sessionById, walletCredentialsById, merged);
         }
         return merged.isEmpty() ? null : merged;
+    }
+
+    /**
+     * Presentation Exchange: an mso_mdoc credential without an explicit selection discloses the
+     * claims its input descriptor asks for ({@code constraints.fields[].path}, e.g.
+     * {@code $['org.iso.18013.5.1']['given_name']}). Paths the credential does not hold are
+     * dropped by the filter, so nothing outside the request is shared. An explicit empty
+     * selection means the user deselected every claim, so nothing is added for it.
+     */
+    private void resolvePresentationExchangeMdocClaims(
+            SubmitPresentationRequestDTO request,
+            VerifiablePresentationSessionData sessionData,
+            Map<String, List<String>> merged) {
+        if (!(sessionData.getParsedAuthorizationRequest() instanceof AuthorizationPresentationExchangeRequest peRequest)
+                || peRequest.getPresentationDefinition() == null
+                || peRequest.getPresentationDefinition().getInputDescriptors() == null
+                || request.getSelectedCredentialIds() == null) {
+            return;
+        }
+        Map<String, InputDescriptor> descriptorsById = peRequest.getPresentationDefinition().getInputDescriptors().stream()
+                .collect(Collectors.toMap(InputDescriptor::getId, d -> d, (a, b) -> a));
+        Map<String, DecryptedCredentialDTO> sessionById = Optional.ofNullable(sessionData.getMatchingCredentials())
+                .orElse(List.of()).stream()
+                .collect(Collectors.toMap(DecryptedCredentialDTO::getId, d -> d, (a, b) -> a));
+
+        Map<String, List<String>> explicit = request.getSelectedSdClaims();
+        for (String credentialId : request.getSelectedCredentialIds()) {
+            if (explicit != null && explicit.containsKey(credentialId)) {
+                continue;
+            }
+            DecryptedCredentialDTO sessionDto = sessionById.get(credentialId);
+            if (sessionDto == null || sessionDto.getCredential() == null
+                    || !CredentialFormat.isMdoc(sessionDto.getCredential().getFormat())) {
+                continue;
+            }
+            InputDescriptor descriptor = descriptorsById.get(sessionDto.getIdentifier());
+            if (descriptor == null || descriptor.getConstraints() == null
+                    || descriptor.getConstraints().getFields() == null) {
+                continue;
+            }
+            List<String> paths = descriptor.getConstraints().getFields().stream()
+                    .filter(Objects::nonNull)
+                    .filter(field -> field.getPath() != null)
+                    .flatMap(field -> field.getPath().stream())
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+            if (!paths.isEmpty()) {
+                SelectedSdClaimsUtil.mergePaths(merged, credentialId, paths);
+                log.info("Presentation Exchange mso_mdoc claims resolved for credential {} descriptor '{}': paths={}",
+                        credentialId, descriptor.getId(), paths);
+            }
+        }
     }
 
     private void processDcqlSelectionCredentials(
@@ -599,7 +657,7 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
     @SuppressWarnings("unchecked")
     private Map<String, Object> extractSdClaimsMap(DecryptedCredentialDTO dto) {
         try {
-            if (!CredentialFormat.isSdJwt(dto.getCredential().getFormat())) {
+            if (!CredentialFormat.isSelectivelyDisclosable(dto.getCredential().getFormat())) {
                 return Collections.emptyMap();
             }
             Map<String, ?> allProps = credentialFormatHandlerFactory
@@ -678,6 +736,23 @@ public class WalletPresentationServiceImpl implements WalletPresentationService 
             }
         }
         throw new InvalidRequestException(INVALID_REQUEST.getErrorCode(), "Invalid LDP dataToSign: missing '.' separator");
+    }
+    /**
+     * Builds an mso_mdoc string containing only the user-selected / requested claims.
+     * If selectedPaths is null/empty, no issuer-signed items are shared for that credential.
+     * Never falls back to the full credential: a filtering failure fails the submission.
+     */
+    private String buildFilteredMdoc(String credentialId, String mdocString, List<String> selectedPaths) {
+        List<String> paths = selectedPaths != null ? selectedPaths : List.of();
+        try {
+            String filtered = MdocSelectiveDisclosureUtil.filter(mdocString, paths);
+            log.info("mso_mdoc filtering for credential {}: selectedPaths={}", credentialId, paths);
+            return filtered;
+        } catch (RuntimeException e) {
+            log.error("Failed to filter mso_mdoc credential {}: {}", credentialId, e.getMessage(), e);
+            throw new InvalidRequestException(INVALID_REQUEST.getErrorCode(),
+                    "Selective disclosure failed for mso_mdoc credential " + credentialId);
+        }
     }
 
     /**
